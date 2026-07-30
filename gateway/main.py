@@ -142,9 +142,24 @@ async def ocr(
         tmp_path.unlink(missing_ok=True)
 
 
-@app.post("/parse")
+@app.post(
+    "/parse",
+    deprecated=True,
+    summary="NOT READY — do not test this endpoint",
+    description=(
+        "Structured document parsing. **Currently non-functional.** This proxies to "
+        "`{DOC_LANE_URL}/parse`, but the doc lane runs vLLM's OpenAI-compatible "
+        "server, which exposes `/v1/chat/completions` and has no `/parse` route. "
+        "Calling this returns 404 when the doc lane is up, or 502 when it is not. "
+        "Use `POST /ocr` instead."
+    ),
+)
 async def parse(file: UploadFile = File(...)):
     """Doc lane: structured document parsing, proxied to the vLLM container.
+
+    NOT FUNCTIONAL — kept so the shape of the intended contract stays visible while
+    the replacement is decided. See the `deprecated` flag above; it is what stops a
+    tester finding this in /docs and filing a bug for a known gap.
 
     Error mapping is deliberately three-way. The previous version had
     raise_for_status() inside the `except httpx.HTTPError` block, and

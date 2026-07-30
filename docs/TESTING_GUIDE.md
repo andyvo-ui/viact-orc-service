@@ -33,6 +33,9 @@ http://172.16.1.22:8000/docs
 
 **Step 2.** Click on the line **`POST /ocr`** to expand it.
 
+> You will also see **`POST /parse`** marked as deprecated. **Ignore it** — that
+> feature is not built yet. `POST /ocr` is the one to test.
+
 **Step 3.** Click the **`Try it out`** button on the right.
 
 **Step 4.** Next to `file`, click **Choose File** and pick the image or PDF you want
