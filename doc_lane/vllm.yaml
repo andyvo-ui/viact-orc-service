@@ -1,0 +1,16 @@
+# vLLM overrides for the doc lane. Keys are vLLM CLI flags with dashes.
+#
+# This file is the ONLY way to set these. paddlex's run_genai_server builds vLLM's
+# argv from get_config() defaults merged with this YAML — it reads no environment
+# variables, so the old GPU_MEMORY_UTILIZATION env var did nothing.
+#
+# Keys not listed here keep paddlex's defaults for PaddleOCR-VL
+# (trust-remote-code, max-model-len 16384, max-num-batched-tokens 131072, ...).
+
+# THE important one. paddlex's default is 0.5, i.e. ~16GB of a 32GB card — which
+# collides with the Qwen 27B already holding 18-24GB on this GPU. 0.15 ~= 4.8GB,
+# matching the doc-lane budget recorded in DECISIONS.md §7.
+#
+# Note this is a fraction of TOTAL VRAM, not of free VRAM: vLLM does not look at
+# what Qwen already took. Raising it is how you starve the LLM.
+gpu-memory-utilization: 0.15

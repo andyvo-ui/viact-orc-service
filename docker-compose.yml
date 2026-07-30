@@ -24,11 +24,20 @@ services:
   doc-lane:
     image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu
     container_name: ocr-doc-lane
+    # --host 0.0.0.0 is REQUIRED, not optional: paddlex's genai_server defaults
+    # --host to "localhost" (inference/genai/server.py), so without this vLLM binds
+    # 127.0.0.1 INSIDE the container and publishing 8118 reaches nothing.
+    #
+    # --backend_config is how gpu-memory-utilization actually gets set. The
+    # GPU_MEMORY_UTILIZATION env var was never read by anything: run_genai_server
+    # builds vLLM's args from get_config() defaults merged with this YAML file only.
     command: >
       paddleocr genai_server
       --model_name PaddleOCR-VL-1.6-0.9B
       --backend vllm
+      --host 0.0.0.0
       --port 8118
+      --backend_config /etc/doc-lane/vllm.yaml
     ports:
       - "8118:8118"
     deploy:
@@ -38,12 +47,8 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-    environment:
-      # vLLM defaults to 90% of TOTAL VRAM — that would starve the LLM sharing
-      # this GPU. UNVERIFIED: confirm genai_server actually forwards this to vLLM
-      # (check nvidia-smi once it is up); if not, pass it as a flag in command:.
-      - GPU_MEMORY_UTILIZATION=0.15
     volumes:
+      - ./doc_lane/vllm.yaml:/etc/doc-lane/vllm.yaml:ro
       - doc-lane-cache:/root/.cache
     restart: unless-stopped
 
