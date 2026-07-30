@@ -1,0 +1,118 @@
+{
+  "20_permit_form.png": {
+    "lines": [
+      "WORK PERMIT / 工作許可證",
+      "PERMIT NO: HK-WP-2026-04817",
+      "SITE: KOWLOON BAY DEPOT / 九龍灣車廠",
+      "CONTRACTOR: VIACT ENGINEERING LTD",
+      "ISSUE DATE: 2026-03-14",
+      "EXPIRY DATE: 2026-03-21",
+      "AREA: BLOCK C LEVEL B2",
+      "HOT WORK: YES",
+      "CONFINED SPACE: NO",
+      "SUPERVISOR: CHAN TAI MAN",
+      "CONTACT: +852 9123 4567"
+    ],
+    "note": "form: boxes, labels, codes, dates, TC+EN"
+  },
+  "21_invoice_table.png": {
+    "lines": [
+      "INVOICE 發票  NO. INV-2026-0917",
+      "ITEM DESC QTY UNIT PRICE AMOUNT",
+      "1 ANCHOR BOLT M16 120 8.50 1,020.00",
+      "2 SAFETY HELMET 45 96.00 4,320.00",
+      "3 SCAFFOLD CLAMP 300 12.75 3,825.00",
+      "4 WARNING TAPE 50M 18 34.00 612.00",
+      "TOTAL 總金額 9,777.00"
+    ],
+    "note": "ruled table: flat OCR cannot rebuild rows/columns"
+  },
+  "22_site_photo.jpg": {
+    "lines": [
+      "緊急出口",
+      "EMERGENCY EXIT",
+      "GATE 3 / 三號閘",
+      "NO ENTRY 禁止進入"
+    ],
+    "note": "photo: perspective + uneven light + JPEG + blur"
+  },
+  "23_nameplate.jpg": {
+    "lines": [
+      "MODEL: VG-2200XT",
+      "SERIAL NO: 8842-XK-01193",
+      "VOLTAGE: 380V 50Hz 3PH",
+      "RATED LOAD: 2,200 kg",
+      "MFG DATE: 2025-11",
+      "CAL DUE: 2026-11-30",
+      "ASSET TAG: VIACT-EQ-00417"
+    ],
+    "note": "small dense text, low contrast on metal grey"
+  },
+  "24_two_column.png": {
+    "lines": [
+      "SECTION 1 - SCOPE",
+      "The contractor shall provide all",
+      "labour, plant and materials for",
+      "the works described herein and",
+      "shall comply with the site rules",
+      "issued by the project manager.",
+      "第一節 - 工程範圍",
+      "承包商須提供所有勞工",
+      "機械及材料以完成本文",
+      "所述之工程並須遵守",
+      "項目經理發出之工地規則"
+    ],
+    "note": "two columns: reading order across the gutter"
+  },
+  "25_low_contrast.png": {
+    "lines": [
+      "REF: HK-2026-0331-B",
+      "FADED CARBON COPY",
+      "施工日誌 SITE DIARY"
+    ],
+    "note": "grey on grey, faded print"
+  },
+  "26_noisy_scan.jpg": {
+    "lines": [
+      "DAILY SITE REPORT 每日工地報告",
+      "DATE: 2026-03-14  WEATHER: FINE",
+      "MANPOWER: 34   PLANT: 6",
+      "INCIDENT: NIL 無事故"
+    ],
+    "note": "bad photocopy: skew + speckle + heavy JPEG"
+  },
+  "27_complex.pdf": {
+    "lines": [
+      "WORK PERMIT / 工作許可證",
+      "PERMIT NO: HK-WP-2026-04817",
+      "SITE: KOWLOON BAY DEPOT / 九龍灣車廠",
+      "CONTRACTOR: VIACT ENGINEERING LTD",
+      "ISSUE DATE: 2026-03-14",
+      "EXPIRY DATE: 2026-03-21",
+      "AREA: BLOCK C LEVEL B2",
+      "HOT WORK: YES",
+      "CONFINED SPACE: NO",
+      "SUPERVISOR: CHAN TAI MAN",
+      "CONTACT: +852 9123 4567",
+      "INVOICE 發票  NO. INV-2026-0917",
+      "ITEM DESC QTY UNIT PRICE AMOUNT",
+      "1 ANCHOR BOLT M16 120 8.50 1,020.00",
+      "2 SAFETY HELMET 45 96.00 4,320.00",
+      "3 SCAFFOLD CLAMP 300 12.75 3,825.00",
+      "4 WARNING TAPE 50M 18 34.00 612.00",
+      "TOTAL 總金額 9,777.00",
+      "SECTION 1 - SCOPE",
+      "The contractor shall provide all",
+      "labour, plant and materials for",
+      "the works described herein and",
+      "shall comply with the site rules",
+      "issued by the project manager.",
+      "第一節 - 工程範圍",
+      "承包商須提供所有勞工",
+      "機械及材料以完成本文",
+      "所述之工程並須遵守",
+      "項目經理發出之工地規則"
+    ],
+    "note": "3-page PDF combining the samples above"
+  }
+}
