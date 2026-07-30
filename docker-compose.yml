@@ -1,0 +1,28 @@
+services:
+  doc-lane:
+    image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu
+    container_name: ocr-doc-lane
+    command: >
+      paddleocr genai_server
+      --model_name PaddleOCR-VL-1.6-0.9B
+      --backend vllm
+      --port 8118
+    ports:
+      - "8118:8118"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    environment:
+      # vLLM defaults to 90% of TOTAL VRAM — this model needs a few GB, cap it hard
+      # so it doesn't starve Qwen or other GPU workloads on the same box.
+      - GPU_MEMORY_UTILIZATION=0.15
+    volumes:
+      - doc-lane-cache:/root/.cache
+    restart: unless-stopped
+
+volumes:
+  doc-lane-cache:

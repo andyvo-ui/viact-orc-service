@@ -1,0 +1,9 @@
+# 3.7.0 is the release that ships the PP-OCRv6 models (2026-06-11).
+# Anything older resolves PP-OCRv6_* model names to nothing.
+paddleocr>=3.7
+
+# Pick EXACTLY ONE ORT build — installing both leaves a broken CUDA EP.
+#   CPU (default):  onnxruntime>=1.19
+#   GPU:            onnxruntime-gpu>=1.19   (then verify with `python check_device.py`)
+onnxruntime>=1.19
+# onnxruntime-gpu>=1.19
