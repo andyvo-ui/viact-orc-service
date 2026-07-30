@@ -3,3 +3,20 @@ __pycache__/
 .venv/
 venv/
 .env
+.pytest_cache/
+
+# scripts/report_live.py output — regenerate it, do not commit it. The exception is
+# a report you deliberately keep as an accuracy baseline; add that one with -f.
+reports/
+
+# Real customer documents must never reach git history — `git add -A` after dropping
+# an HK contract in here would be very hard to undo. tests/README.md says what goes
+# where.
+#
+# TRADE-OFF, stated so it is a choice and not an accident: golden.json is ignored
+# too, because it contains text extracted FROM a customer document. Consequence —
+# the test_g4 baseline is per-machine and does not travel with a clone. On a fresh
+# checkout test_g4 writes a new baseline and skips once. If you would rather have a
+# portable baseline, build it from a synthetic or public document and un-ignore it.
+tests/fixtures/*
+!tests/fixtures/.gitkeep

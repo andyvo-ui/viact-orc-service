@@ -7,3 +7,8 @@ paddleocr>=3.7
 #   GPU:            onnxruntime-gpu>=1.19   (then verify with `python check_device.py`)
 onnxruntime>=1.19
 # onnxruntime-gpu>=1.19
+
+# Transitive via paddlex/onnxruntime, but ocr_engine.py imports it directly to
+# coerce numpy output to JSON-safe builtins. Declared, not assumed. Unpinned on
+# purpose so pip resolves against paddlex's and opencv's own constraints.
+numpy

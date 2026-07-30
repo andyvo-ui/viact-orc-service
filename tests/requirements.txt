@@ -1,0 +1,17 @@
+# Test deps only — NOT installed in the gateway image.
+# These run on the host (or the VM), hitting the gateway over HTTP.
+pytest>=8.0
+httpx>=0.27
+pillow>=10.0        # generates synthetic fixtures (images + PDFs)
+
+# tests/offline/ imports the real gateway app in-process, so it needs the gateway's
+# own runtime deps — but NOT paddleocr, which is stubbed. That is the whole point:
+# the offline suite runs on a laptop with no model, no GPU and no docker.
+fastapi>=0.115
+python-multipart>=0.0.9
+numpy
+
+# Builds real multi-page PDFs to exercise the /ocr page cap. Deliberately the SAME
+# library paddlex uses to rasterise PDFs (it arrives via paddlex[ocr-core]), so the
+# page count these tests assert is the count the engine will actually iterate.
+pypdfium2>=4

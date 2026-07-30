@@ -14,12 +14,27 @@ A very slow first run (tens of seconds) suggests the driver is JIT-compiling PTX
 for this GPU arch. That is expected once, not per request.
 """
 
+import os
 import sys
 from pathlib import Path
 
 import onnxruntime as ort
 
-DET_ONNX = Path(__file__).parent / "models" / "PP-OCRv6_small_det_onnx" / "inference.onnx"
+# paddlex caches downloaded weights under $PADDLE_PDX_CACHE_HOME (default ~/.paddlex)
+# in official_models/<model_name>_onnx/inference.onnx — verified against paddlex
+# 3.7.0 (utils/cache.py DEFAULT_CACHE_DIR, official_models.py _save_dir,
+# constants.py MODEL_FILE_PREFIX). Nothing is ever written under fast_lane/models/.
+CACHE_DIR = Path(os.getenv("PADDLE_PDX_CACHE_HOME", Path.home() / ".paddlex"))
+MODEL_ROOT = CACHE_DIR / "official_models"
+
+
+def _find_det_onnx() -> Path | None:
+    """Any det .onnx will do — this probes the runtime, not a specific model."""
+    for candidate in sorted(MODEL_ROOT.glob("*_det_onnx/inference.onnx")):
+        return candidate
+    for candidate in sorted(MODEL_ROOT.rglob("inference.onnx")):
+        return candidate
+    return None
 
 
 def main() -> int:
@@ -31,13 +46,16 @@ def main() -> int:
               "The two conflict — uninstall both, then install only onnxruntime-gpu.")
         return 1
 
-    if not DET_ONNX.exists():
-        print(f"\nFAIL: model not found at {DET_ONNX}")
-        print("      Run ./download_models.sh first.")
+    det_onnx = _find_det_onnx()
+    if det_onnx is None:
+        print(f"\nFAIL: no cached ONNX model under {MODEL_ROOT}")
+        print("      Run `python fast_lane/prefetch_models.py` first (the Docker")
+        print("      build does this at image-build time).")
         return 1
+    print("probing with:", det_onnx)
 
     session = ort.InferenceSession(
-        str(DET_ONNX),
+        str(det_onnx),
         providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
     )
     active = session.get_providers()
