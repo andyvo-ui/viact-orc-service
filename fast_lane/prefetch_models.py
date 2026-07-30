@@ -3,12 +3,15 @@
 PaddleOCR downloads weights lazily on first use. Run this once after install so
 the first real request is not paying for a download.
 
-    python prefetch_models.py
+    python fast_lane/prefetch_models.py
 """
 
 import sys
+from pathlib import Path
 
-from ocr_engine import DET_MODEL, DEVICE, REC_MODEL, warmup
+sys.path.insert(0, str(Path(__file__).parent))
+
+from ocr_engine import DET_MODEL, DEVICE, REC_MODEL, warmup  # noqa: E402
 
 
 def main() -> int:

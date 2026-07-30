@@ -1,4 +1,26 @@
 services:
+  # Gateway + fast lane (PP-OCRv6_small, ONNX, CPU).
+  # No depends_on for doc-lane on purpose: /ocr must stay available even when the
+  # GPU lane is down or not started at all. /parse just returns 502 in that case.
+  gateway:
+    build: .
+    image: ocr-service-gateway:latest
+    container_name: ocr-gateway
+    ports:
+      - "8000:8000"
+    environment:
+      - OCR_DEVICE=cpu
+      - DOC_LANE_URL=http://doc-lane:8118
+      - DOC_LANE_TIMEOUT=300
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 5s
+      start_period: 60s
+      retries: 3
+    restart: unless-stopped
+
+  # Doc lane (PaddleOCR-VL-1.6-0.9B on vLLM, GPU).
   doc-lane:
     image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu
     container_name: ocr-doc-lane
@@ -17,8 +39,9 @@ services:
               count: 1
               capabilities: [gpu]
     environment:
-      # vLLM defaults to 90% of TOTAL VRAM — this model needs a few GB, cap it hard
-      # so it doesn't starve Qwen or other GPU workloads on the same box.
+      # vLLM defaults to 90% of TOTAL VRAM — that would starve the LLM sharing
+      # this GPU. UNVERIFIED: confirm genai_server actually forwards this to vLLM
+      # (check nvidia-smi once it is up); if not, pass it as a flag in command:.
       - GPU_MEMORY_UTILIZATION=0.15
     volumes:
       - doc-lane-cache:/root/.cache
