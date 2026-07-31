@@ -1,22 +1,33 @@
 """Offline — /parse error mapping. The doc lane here is a real localhost server.
 
 Only the doc-lane *server* is a stand-in; the gateway's httpx client, its exception
-types and its status mapping all execute for real.
+types and its status mapping all execute for real. Real sample files (tests/samples)
+exercise the real pypdfium2/PIL rasterisation path too — nothing about *that* is
+stubbed here, unlike paddleocr.
 
 The bug this guards: raise_for_status() used to sit INSIDE the
 `except httpx.HTTPError` block, and httpx.HTTPStatusError subclasses HTTPError. So
 a doc-lane 400 ("your file is garbage") reached the caller as 502 ("our GPU box is
 down"), and a retry loop would hammer a request that can never succeed.
 
-The mapping the gateway must now implement:
+The mapping the gateway must implement:
 
     upstream situation              gateway responds
     -----------------------------  -----------------------------------------
     connection refused / DNS       502  "doc lane unreachable"
     upstream 4xx                   the SAME 4xx, "doc lane rejected"
     upstream 5xx                   502  "doc lane failed with <code>"
-    upstream 200, valid JSON       200  body passed through unchanged
     upstream 200, not JSON         502  "doc lane returned non-JSON"
+    upstream 200, valid JSON,      502  "doc lane returned a malformed completion"
+      but no choices[0].message.content
+    upstream 200, a real           200  {"markdown": <content>, "pages": N}
+      OpenAI chat-completion
+
+Every test below also triggers a GET to /v1/models first (the gateway asks the doc
+lane what it's serving before the real completion call) — the stub's do_GET replies
+with whatever .responds() last set, same as do_POST, but only do_POST is recorded
+into .requests. _doc_lane_model_name() swallows any failure from that GET and falls
+back to a hardcoded model name, so it never changes what these tests assert.
 """
 
 import json
@@ -100,48 +111,100 @@ def test_upstream_5xx_becomes_502_naming_the_code(post_parse, doc_lane, upstream
 # --------------------------------------------------------------------------- #
 
 
-def test_upstream_json_passes_through_unchanged(post_parse, doc_lane):
-    """SETUP.md #2 is still open — the real doc-lane schema is unknown. So this
-    asserts pass-through fidelity, NOT a schema: whatever it sends, the caller gets
-    byte-for-byte the same object."""
-    payload = {
-        "markdown": "# Invoice\n\n| item | qty |\n|---|---|\n| bolt | 12 |",
-        "pages": 2,
-        "nested": {"tables": [{"rows": 3}], "unicode": "總金額"},
-    }
-    doc_lane.responds(200, json.dumps(payload).encode(), "application/json")
+def _completion(content: str) -> bytes:
+    """Build a real OpenAI-shaped chat-completion 200 body, the shape verified
+    against the live doc lane via scripts/test_doclane.sh."""
+    return json.dumps(
+        {
+            "choices": [{"message": {"content": content}}],
+            "usage": {"prompt_tokens": 123, "completion_tokens": 45},
+        }
+    ).encode()
+
+
+def test_upstream_completion_is_normalised_to_markdown(post_parse, doc_lane):
+    """The gateway no longer passes the doc lane's raw OpenAI-shaped JSON through —
+    it extracts choices[0].message.content and returns it as {"markdown": ...},
+    so every caller of /parse gets the same shape regardless of what serves the
+    doc lane underneath."""
+    content = "# Invoice\n\n| item | qty |\n|---|---|\n| bolt | 12 |\n\n總金額"
+    doc_lane.responds(200, _completion(content), "application/json")
 
     resp = post_parse()
 
     assert resp.status_code == 200, resp.text[:300]
-    assert resp.json() == payload
+    assert resp.json() == {"markdown": content, "pages": 1}
 
 
-def test_gateway_forwards_multipart_file_field(post_parse, doc_lane):
-    """main.py assumes the doc lane wants multipart 'file'. That assumption is still
-    unverified against the real server, but this pins what we actually send, so the
-    day someone reads the real API there is one place to compare against."""
-    doc_lane.responds(200, b'{"ok": true}')
+def test_gateway_sends_one_base64_image_per_page(post_parse, doc_lane):
+    """The doc lane is vLLM's OpenAI-compatible server — it has no /parse route and
+    wants JSON chat-completions with a base64 image, not multipart 'file'. This
+    pins the request shape actually sent, matching scripts/test_doclane.sh."""
+    doc_lane.responds(200, _completion("stub"))
 
-    post_parse(payload=b"%PDF-1.4 sentinel-bytes", filename="contract.pdf")
+    post_parse()
 
     assert len(doc_lane.requests) == 1, doc_lane.requests
     sent = doc_lane.requests[0]
-    assert sent["path"] == "/parse", sent["path"]
-    assert sent["content_type"].startswith("multipart/form-data"), sent["content_type"]
-    assert b'name="file"' in sent["raw"], sent["raw"][:200]
-    assert b"contract.pdf" in sent["raw"], sent["raw"][:200]
-    assert b"sentinel-bytes" in sent["raw"], "the upload body did not reach the doc lane"
+    assert sent["path"] == "/v1/chat/completions", sent["path"]
+    assert sent["content_type"].startswith("application/json"), sent["content_type"]
+
+    body = json.loads(sent["raw"])
+    assert body["model"], "model field must be set (from /v1/models or the fallback)"
+    content_blocks = body["messages"][0]["content"]
+    image_block = next(b for b in content_blocks if b["type"] == "image_url")
+    assert image_block["image_url"]["url"].startswith("data:image/png;base64,"), (
+        image_block["image_url"]["url"][:60]
+    )
 
 
 def test_missing_filename_does_not_break_the_proxy(app_client, doc_lane):
-    """UploadFile.filename can be None. main.py falls back to 'upload' rather than
-    handing httpx a None filename."""
-    doc_lane.responds(200, b'{"ok": true}')
+    """UploadFile.filename can be None. The gateway must still fall back to a
+    usable suffix/mime-type instead of crashing on a None filename.
+
+    422 is an accepted outcome, not just 200: httpx's multipart encoder treats a
+    `(None, bytes)` file tuple as a plain form field rather than a file, so
+    Starlette's own `UploadFile` validation may reject it before the handler body
+    ever runs. That is a pre-existing Starlette/httpx quirk, unrelated to /parse's
+    own logic — the thing under test is "does not crash" (no 500), not which of
+    200/422 Starlette's request validation happens to pick.
+    """
+    doc_lane.responds(200, _completion("stub"))
 
     resp = app_client.post("/parse", files={"file": (None, b"bytes-with-no-name")})
 
     assert resp.status_code in (200, 422), f"{resp.status_code}: {resp.text[:300]}"
+
+
+def test_malformed_completion_is_502_not_a_gateway_traceback(post_parse, doc_lane):
+    """Valid JSON, upstream 200 — but not the OpenAI chat-completion shape asked
+    for. Distinct from the non-JSON case below: `.json()` succeeds here, so this
+    must be caught by field access, not by the JSON parse."""
+    doc_lane.responds(200, b'{"ok": true}', "application/json")
+
+    resp = post_parse()
+
+    assert resp.status_code == 502, f"{resp.status_code}: {resp.text[:300]}"
+    assert "malformed completion" in resp.text, resp.text[:400]
+
+
+def test_two_page_pdf_is_stitched_with_page_markers(post_parse, doc_lane, tmp_path):
+    """A multi-page PDF is rasterised page-by-page (pypdfium2) and sent as separate
+    completions — the doc lane takes one image per request, not a whole PDF."""
+    from pathlib import Path
+
+    pdf_bytes = (Path("tests/samples/08_two_page.pdf")).read_bytes()
+    doc_lane.responds(200, _completion("PAGE TEXT"))
+
+    resp = post_parse(payload=pdf_bytes, filename="doc.pdf", content_type="application/pdf")
+
+    assert resp.status_code == 200, resp.text[:300]
+    body = resp.json()
+    assert body["pages"] == 2, body
+    assert len(doc_lane.requests) == 2, doc_lane.requests
+    assert "<!-- page 1 -->" in body["markdown"]
+    assert "<!-- page 2 -->" in body["markdown"]
+    assert body["markdown"].count("PAGE TEXT") == 2
 
 
 # --------------------------------------------------------------------------- #

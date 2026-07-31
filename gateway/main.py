@@ -20,6 +20,8 @@ takes multipart 'file' and returns JSON — verify against the running container
 see run_ocr in fast_lane/ocr_engine.py.
 """
 
+import base64
+import mimetypes
 import os
 import sys
 import tempfile
@@ -37,6 +39,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "fast_lane"))
 import input_limits  # noqa: E402
 from input_limits import (  # noqa: E402
     TooManyPages,
+    UnreadablePDF,
     UploadTooLarge,
     enforce_page_limit,
     stream_upload_to,
@@ -83,6 +86,7 @@ async def health():
         "limits": {
             "max_pages": input_limits.MAX_PAGES,
             "max_upload_bytes": input_limits.MAX_UPLOAD_BYTES,
+            "parse_max_pages": input_limits.PARSE_MAX_PAGES,
         },
         "default_orientation": "auto" if DETECT_ORIENTATION_DEFAULT else "upright",
     }
@@ -142,41 +146,63 @@ async def ocr(
         tmp_path.unlink(missing_ok=True)
 
 
-@app.post(
-    "/parse",
-    deprecated=True,
-    summary="NOT READY — do not test this endpoint",
-    description=(
-        "Structured document parsing. **Currently non-functional.** This proxies to "
-        "`{DOC_LANE_URL}/parse`, but the doc lane runs vLLM's OpenAI-compatible "
-        "server, which exposes `/v1/chat/completions` and has no `/parse` route. "
-        "Calling this returns 404 when the doc lane is up, or 502 when it is not. "
-        "Use `POST /ocr` instead."
-    ),
-)
-async def parse(file: UploadFile = File(...)):
-    """Doc lane: structured document parsing, proxied to the vLLM container.
+DOC_LANE_MODEL_FALLBACK = "PaddleOCR-VL-1.6-0.9B"
+DOC_LANE_MAX_TOKENS = 4096
 
-    NOT FUNCTIONAL — kept so the shape of the intended contract stays visible while
-    the replacement is decided. See the `deprecated` flag above; it is what stops a
-    tester finding this in /docs and filing a bug for a known gap.
 
-    Error mapping is deliberately three-way. The previous version had
-    raise_for_status() inside the `except httpx.HTTPError` block, and
-    HTTPStatusError subclasses HTTPError — so a doc-lane 400 ("your file is
-    garbage") reached the caller as 502 ("our GPU box is down"). Callers cannot
-    tell those apart, so they retry a request that can never succeed.
+async def _doc_lane_model_name(client: httpx.AsyncClient) -> str:
+    """Best-effort, mirroring scripts/test_doclane.sh: ask the doc lane what it's
+    actually serving, falling back to the known default on any failure.
+
+    Not worth its own error path — a wrong model name surfaces on the real
+    completions call below as an upstream 4xx, which already has a mapping.
     """
-    async with httpx.AsyncClient(timeout=DOC_LANE_TIMEOUT) as client:
-        try:
-            resp = await client.post(
-                f"{DOC_LANE_URL}/parse",
-                files={"file": (file.filename or "upload", await file.read())},
-            )
-        except httpx.HTTPError as exc:
-            # Transport level only: DNS, connection refused, timeout. This is the
-            # sole case that is genuinely "the doc lane is unreachable".
-            raise HTTPException(status_code=502, detail=f"doc lane unreachable: {exc}") from exc
+    try:
+        resp = await client.get(f"{DOC_LANE_URL}/v1/models")
+        return resp.json()["data"][0]["id"]
+    except Exception:
+        return DOC_LANE_MODEL_FALLBACK
+
+
+async def _doc_lane_complete(
+    client: httpx.AsyncClient, model: str, image_bytes: bytes, mime: str
+) -> str:
+    """POST one page to the doc lane's OpenAI-compatible chat-completions endpoint
+    and return the extracted markdown.
+
+    Error mapping is deliberately three-way (unchanged from the original /parse
+    proxy). The previous version had raise_for_status() inside the
+    `except httpx.HTTPError` block, and HTTPStatusError subclasses HTTPError — so a
+    doc-lane 400 ("your file is garbage") reached the caller as 502 ("our GPU box is
+    down"). Callers cannot tell those apart, so they retry a request that can never
+    succeed.
+    """
+    b64 = base64.b64encode(image_bytes).decode()
+    try:
+        resp = await client.post(
+            f"{DOC_LANE_URL}/v1/chat/completions",
+            json={
+                "model": model,
+                "messages": [
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": {"url": f"data:{mime};base64,{b64}"},
+                            },
+                            {"type": "text", "text": "OCR:"},
+                        ],
+                    }
+                ],
+                "max_tokens": DOC_LANE_MAX_TOKENS,
+                "temperature": 0.0,
+            },
+        )
+    except httpx.HTTPError as exc:
+        # Transport level only: DNS, connection refused, timeout. This is the
+        # sole case that is genuinely "the doc lane is unreachable".
+        raise HTTPException(status_code=502, detail=f"doc lane unreachable: {exc}") from exc
 
     # Caller's fault — pass the status through so a retry loop can give up.
     if 400 <= resp.status_code < 500:
@@ -192,10 +218,108 @@ async def parse(file: UploadFile = File(...)):
         )
 
     try:
-        return resp.json()
+        data = resp.json()
     except ValueError as exc:
-        # SETUP.md #2 is still open: "JSON out" is an assumption about an endpoint
-        # nobody here has called. Surface it as a bad upstream, not a gateway crash.
         raise HTTPException(
             status_code=502, detail=f"doc lane returned non-JSON: {resp.text[:200]}"
         ) from exc
+
+    # Valid JSON, but not the OpenAI chat-completion shape we asked for — a
+    # DIFFERENT failure than non-JSON, so it gets its own message.
+    try:
+        content = data["choices"][0]["message"]["content"]
+        if not isinstance(content, str):
+            raise TypeError("content is not a string")
+    except (KeyError, IndexError, TypeError) as exc:
+        raise HTTPException(
+            status_code=502,
+            detail=f"doc lane returned a malformed completion: {resp.text[:200]}",
+        ) from exc
+
+    return content
+
+
+@app.post(
+    "/parse",
+    deprecated=True,
+    summary="NOT READY — do not test this endpoint",
+    description=(
+        "Structured document parsing. **Not yet verified against the real doc "
+        "lane.** This now speaks the doc lane's actual protocol (vLLM's "
+        "OpenAI-compatible `/v1/chat/completions`, one image per page), but nobody "
+        "has run it against the live container yet — see SETUP.md. Use `POST /ocr` "
+        "instead until this notice is removed."
+    ),
+)
+async def parse(file: UploadFile = File(...)):
+    """Doc lane: structured document parsing via PaddleOCR-VL, served by vLLM.
+
+    The doc lane is a vision-language model behind an OpenAI-compatible chat API —
+    it has no /parse route and does not accept multipart file uploads or raw PDF
+    bytes. It takes one image per request (`image_url` content block, base64
+    data URI). So a PDF is rasterised here, page by page (`render_pdf_pages_to_png`,
+    reusing the same pypdfium2 dependency /ocr's page-counting already uses), and
+    each page is sent as a separate completion; a plain image is sent as-is. Pages
+    are joined with an HTML-comment marker rather than silently concatenated, so the
+    boundary survives as a signal without being a hard cut — same convention as the
+    WhatsApp/knowledge-base ingestion side of this project.
+
+    Deliberately kept `deprecated=True` / "NOT READY" above even though this is a
+    real implementation now: it has not been run against the live doc-lane
+    container. Flip that only after a manual check (see SETUP.md / DECISIONS.md).
+    """
+    suffix = Path(file.filename or "upload").suffix
+    fd, name = tempfile.mkstemp(suffix=suffix)
+    os.close(fd)
+    tmp_path = Path(name)
+
+    try:
+        try:
+            await stream_upload_to(file, tmp_path)
+        except UploadTooLarge as exc:
+            raise HTTPException(
+                status_code=413,
+                detail=f"upload exceeds {exc.limit_bytes} bytes "
+                f"(OCR_MAX_UPLOAD_BYTES)",
+            ) from exc
+
+        try:
+            pdf_pages = enforce_page_limit(tmp_path, max_pages=input_limits.PARSE_MAX_PAGES)
+        except TooManyPages as exc:
+            raise HTTPException(
+                status_code=413,
+                detail=f"{exc.pages}-page PDF exceeds the {exc.limit}-page doc-lane "
+                f"limit (OCR_PARSE_MAX_PAGES).",
+            ) from exc
+
+        if pdf_pages is not None:
+            try:
+                page_images = [
+                    (png, "image/png")
+                    for png in input_limits.render_pdf_pages_to_png(tmp_path)
+                ]
+            except UnreadablePDF as exc:
+                raise HTTPException(
+                    status_code=400, detail=f"could not read PDF: {exc}"
+                ) from exc
+        else:
+            mime = mimetypes.guess_type(file.filename or "")[0] or "image/jpeg"
+            page_images = [(tmp_path.read_bytes(), mime)]
+
+        async with httpx.AsyncClient(timeout=DOC_LANE_TIMEOUT) as client:
+            model = await _doc_lane_model_name(client)
+            page_markdowns = [
+                await _doc_lane_complete(client, model, image_bytes, mime)
+                for image_bytes, mime in page_images
+            ]
+
+        if len(page_markdowns) <= 1:
+            markdown = page_markdowns[0] if page_markdowns else ""
+        else:
+            markdown = "\n\n".join(
+                f"<!-- page {i} -->\n\n{text}"
+                for i, text in enumerate(page_markdowns, start=1)
+            )
+        return {"markdown": markdown, "pages": len(page_markdowns)}
+    finally:
+        tmp_path.unlink(missing_ok=True)

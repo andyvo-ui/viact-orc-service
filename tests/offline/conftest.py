@@ -245,9 +245,22 @@ def dead_doc_lane_url(monkeypatch):
 
 @pytest.fixture
 def post_parse(app_client):
-    def _post(payload=b"%PDF-1.4 pretend", filename="doc.pdf"):
+    """POST a real file to /parse.
+
+    Unlike post_ocr, the payload here is NOT decoded by a stub — /parse now reads
+    the file for real (pypdfium2 for PDFs, PIL for the base64 encode step) before
+    it ever reaches the doc lane. A fake `%PDF-1.4 pretend` payload would fail at
+    that read, before the error-mapping logic under test even runs — so this
+    defaults to a real 1-page image, and callers pass a real sample PDF path for
+    the multi-page tests.
+    """
+
+    def _post(payload=None, filename="doc.jpg", content_type="image/jpeg"):
+        if payload is None:
+            payload = (ROOT / "tests/samples/01_english.png").read_bytes()
+            filename, content_type = "01_english.png", "image/png"
         return app_client.post(
-            "/parse", files={"file": (filename, payload, "application/pdf")}
+            "/parse", files={"file": (filename, payload, content_type)}
         )
 
     return _post

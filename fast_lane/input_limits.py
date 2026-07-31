@@ -24,6 +24,7 @@ speed and on how many pages your real permits and contracts actually have. Measu
 before raising them.
 """
 
+import io
 import os
 from pathlib import Path
 
@@ -37,6 +38,12 @@ MAX_UPLOAD_BYTES = int(os.getenv("OCR_MAX_UPLOAD_BYTES", str(50 * 1024 * 1024)))
 # only after test_c1/test_c2 have run on the real box.
 MAX_PAGES = int(os.getenv("OCR_MAX_PAGES", "10"))
 
+# Doc lane cost is a GPU round-trip per page (vLLM), not local CPU inference, so it
+# gets its own cap rather than sharing MAX_PAGES. 20 is a starting point, not a
+# measured number — raise or lower once real per-page latency is known (see
+# DECISIONS.md / SETUP.md).
+PARSE_MAX_PAGES = int(os.getenv("OCR_PARSE_MAX_PAGES", "20"))
+
 
 class UploadTooLarge(Exception):
     def __init__(self, limit_bytes: int):
@@ -49,6 +56,11 @@ class TooManyPages(Exception):
         self.pages = pages
         self.limit = limit
         super().__init__(f"{pages} pages exceeds the {limit}-page limit")
+
+
+class UnreadablePDF(Exception):
+    """A file sniffs as a PDF (`%PDF-` magic bytes) but pypdfium2 cannot open or
+    render it — e.g. truncated or corrupted past the header."""
 
 
 async def stream_upload_to(upload, dest: Path, *, max_bytes: int | None = None) -> int:
@@ -125,3 +137,46 @@ def enforce_page_limit(path: Path, *, max_pages: int | None = None) -> int | Non
     if pages is not None and pages > limit:
         raise TooManyPages(pages, limit)
     return pages
+
+
+def render_pdf_pages_to_png(path: Path, *, scale: float = 2.0) -> list[bytes]:
+    """Rasterise each page of a PDF to a PNG, in reading order.
+
+    The doc lane is a vision-language model behind an OpenAI-compatible chat API —
+    it takes images (`image_url`), not PDF bytes. This renders pages so /parse can
+    hand it one image per page. `scale=2.0` matches paddlex's own default PDF-to-
+    image zoom (`PDFReaderBackend`), so fast lane and doc lane see visually
+    equivalent input for the same file.
+
+    Uses `.to_pil()`, not `.to_numpy()` + cv2: cv2 is only guaranteed in the
+    production container (arrives transitively via paddleocr, which the offline
+    test suite deliberately does not install — see tests/offline/conftest.py).
+    Pillow is guaranteed in BOTH: it is an unconditional paddlex dependency (not
+    behind an extras marker, unlike opencv-contrib-python) and is already an
+    explicit offline-test dependency (tests/requirements.txt, for synthesising
+    fixtures). Verified directly: `PdfBitmap.to_pil()` returns proper RGB, no
+    channel-order bugs to route around.
+    """
+    import pypdfium2
+    from PIL import Image  # noqa: F401 — import error should surface, not just PIL usage below
+
+    try:
+        doc = pypdfium2.PdfDocument(str(path))
+    except Exception as exc:
+        raise UnreadablePDF(str(exc)) from exc
+
+    try:
+        pages = []
+        for page in doc:
+            try:
+                image = page.render(scale=scale).to_pil()
+            finally:
+                page.close()
+            buf = io.BytesIO()
+            image.save(buf, format="PNG")
+            pages.append(buf.getvalue())
+        return pages
+    except pypdfium2.PdfiumError as exc:
+        raise UnreadablePDF(str(exc)) from exc
+    finally:
+        doc.close()
