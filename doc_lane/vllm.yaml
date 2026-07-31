@@ -8,9 +8,18 @@
 # (trust-remote-code, max-model-len 16384, max-num-batched-tokens 131072, ...).
 
 # THE important one. paddlex's default is 0.5, i.e. ~16GB of a 32GB card — which
-# collides with the Qwen 27B already holding 18-24GB on this GPU. 0.15 ~= 4.8GB,
-# matching the doc-lane budget recorded in DECISIONS.md §7.
+# collides with the Qwen 27B already holding 18-24GB on this GPU.
 #
 # Note this is a fraction of TOTAL VRAM, not of free VRAM: vLLM does not look at
 # what Qwen already took. Raising it is how you starve the LLM.
-gpu-memory-utilization: 0.15
+#
+# TEMPORARY, for /parse verification only (2026-07-31): 0.15 (~4.8GB) was the
+# DECISIONS.md §7 budget target, but in practice vLLM raised "No available memory
+# for the cache blocks" at that value — model weights (~2GB) + CUDA/framework
+# overhead leave nothing for even one KV cache block, so it cannot start AT ALL
+# below some real floor, regardless of what else is sharing the GPU. 0.3 (~9.5GB)
+# is a guess with headroom to get it running for verification while the GPU is
+# otherwise idle — NOT a measured value. Before running this alongside Qwen for
+# real, find the actual minimum viable value (raise until it starts, that is the
+# floor) and re-check the total VRAM budget in DECISIONS.md §7 against it.
+gpu-memory-utilization: 0.3
