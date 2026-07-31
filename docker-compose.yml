@@ -49,7 +49,13 @@ services:
               capabilities: [gpu]
     volumes:
       - ./doc_lane/vllm.yaml:/etc/doc-lane/vllm.yaml:ro
-      - doc-lane-cache:/root/.cache
+      # Was /root/.cache — wrong user. genai_server runs as `paddleocr`, not root
+      # (confirmed from its own startup log: models are saved under
+      # /home/paddleocr/.paddlex/official_models/...), so /root/.cache was never
+      # the path anything actually wrote to. The cache silently lived in the
+      # container's writable layer instead of this volume, so every container
+      # recreation (e.g. `up --build`) re-triggered the multi-GB download.
+      - doc-lane-cache:/home/paddleocr/.paddlex
     restart: unless-stopped
 
 volumes:
