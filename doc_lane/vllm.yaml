@@ -44,12 +44,22 @@
 # 16384 documents still work, just via more forward-pass steps (more latency
 # per long doc, not a correctness issue).
 #
-# Card headroom next to Qwen (~19.7GB) + apparently a third process (~3.6GB,
-# matches the STT budget in DECISIONS.md §7) is thin regardless: steady-state
-# free hovers ~0.6-6.5GB depending on measurement. If this still OOMs, there is
-# no more room in doc-lane's own config to give — re-check DECISIONS.md §7's
-# assumed 20GB hard cap on Qwen, since the actual numbers observed here don't
-# match it.
-gpu-memory-utilization: 0.18
+# Card headroom next to Qwen (~19.7GB) + a third process (~5GB, unidentified,
+# not a docker container) is thin regardless: steady-state free hovers as low
+# as ~950MB with all three up. At 0.18 doc-lane itself settled at 6.44GB, ABOVE
+# its own 5.73GB nominal budget — a chunk of its footprint (weights + CUDA
+# context) is fixed, not scaled by this ratio.
+#
+# Retrying 0.15 now that max-num-batched-tokens is capped at 4096: the original
+# "No available memory for the cache blocks" failure at 0.15 and the later raw
+# OOM crash at 0.2/0.18 both trace to the SAME _dummy_run profiling step (see
+# above) — its activation footprint was subtracted from the ratio's budget
+# before the cache-block check, and separately had to fit in whatever was
+# actually free on the card. A 131072-token dummy batch made both numbers
+# large; a 4096-token one should shrink both. Not yet confirmed at 0.15 with
+# this cap in place — if it reproduces "No available memory for the cache
+# blocks" again, the floor is a fixed cost (weights + CUDA context) this ratio
+# can't get under, and 0.18 is the value to fall back to.
+gpu-memory-utilization: 0.15
 enforce-eager: true
 max-num-batched-tokens: 4096
