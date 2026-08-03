@@ -27,24 +27,29 @@
 # 0.2 (~6.27 GiB) to fit inside that headroom.
 #
 # 0.2 still crash-looped: torch.OutOfMemoryError trying to allocate 768 MiB with
-# the process already at 6.57 GiB, card-wide free down to 669 MiB — and this hit
-# ~15s after container start, before any request could have been sent. That
-# timing points at vLLM's CUDA graph capture step, which runs right after KV
-# cache profiling and reserves extra transient VRAM outside the profiled budget
-# — gpu-memory-utilization never accounted for it. enforce-eager below skips
-# that step entirely (costs some per-request latency, no capture-time spike).
+# the process already at 6.57 GiB, card-wide free down to 669 MiB — ~15s after
+# container start, before any request could have been sent. First guess was
+# vLLM's CUDA graph capture step (runs after KV cache profiling, reserves extra
+# transient VRAM outside the profiled budget) — added enforce-eager to skip it.
+#
+# Wrong guess: 0.18 + enforce-eager crash-looped with the IDENTICAL numbers
+# (669 MiB free, 6.57 GiB in use, 768 MiB requested), and the confirmed log
+# showed enforce_eager=True actually in effect — so graph capture was never
+# the cause. Full traceback pinned it instead to gpu_model_runner.py _dummy_run
+# -> the model's own forward pass (MLP act_fn -> torch.empty), i.e. vLLM's
+# memory-profiling dummy batch, which vLLM sizes off max-num-batched-tokens —
+# paddlex's default 131072 (see line 8), never touched by this file, sized for
+# a whole dedicated card, not a ~6GB shared sliver. Lowered below to 4096; vLLM
+# chunk-prefills sequences longer than that automatically, so max-model-len
+# 16384 documents still work, just via more forward-pass steps (more latency
+# per long doc, not a correctness issue).
 #
 # Card headroom next to Qwen (~19.7GB) + apparently a third process (~3.6GB,
 # matches the STT budget in DECISIONS.md §7) is thin regardless: steady-state
-# free hovers ~6.5GB. If this still OOMs, there is no more room in this value
-# to give — re-check DECISIONS.md §7's assumed 20GB hard cap on Qwen, since the
-# actual numbers observed here don't match it.
-#
-# Nudged 0.2 -> 0.18 (~5.64GB) for extra margin on top of enforce-eager. NOT
-# confirmed to still clear the "No available memory for the cache blocks" floor
-# that killed 0.15 (~4.8GB) — that check depends on the KV-cache budget this
-# ratio produces, which shrinks as this goes down. If 0.18 hits that error
-# instead of the CUDA-graph one, the floor sits between 0.18 and 0.2 and this
-# needs to go back up, not down further.
+# free hovers ~0.6-6.5GB depending on measurement. If this still OOMs, there is
+# no more room in doc-lane's own config to give — re-check DECISIONS.md §7's
+# assumed 20GB hard cap on Qwen, since the actual numbers observed here don't
+# match it.
 gpu-memory-utilization: 0.18
 enforce-eager: true
+max-num-batched-tokens: 4096
