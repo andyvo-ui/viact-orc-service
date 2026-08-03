@@ -17,9 +17,18 @@
 # DECISIONS.md §7 budget target, but in practice vLLM raised "No available memory
 # for the cache blocks" at that value — model weights (~2GB) + CUDA/framework
 # overhead leave nothing for even one KV cache block, so it cannot start AT ALL
-# below some real floor, regardless of what else is sharing the GPU. 0.3 (~9.5GB)
-# is a guess with headroom to get it running for verification while the GPU is
-# otherwise idle — NOT a measured value. Before running this alongside Qwen for
-# real, find the actual minimum viable value (raise until it starts, that is the
-# floor) and re-check the total VRAM budget in DECISIONS.md §7 against it.
-gpu-memory-utilization: 0.3
+# below some real floor, regardless of what else is sharing the GPU. That check
+# is not a flag you can turn off: without at least one cache block there is
+# nowhere to put attention state, so vLLM cannot run at all, not "runs slower".
+#
+# 0.3 was then a guess with headroom to run while the GPU was otherwise idle —
+# NOT measured against Qwen. With Qwen running (2026-08-03), the card reported
+# only 6.63/31.36 GiB free, below what 0.3 (9.41 GiB of TOTAL) needs. Lowered to
+# 0.2 (~6.27 GiB) to fit inside that headroom — still a guess, not confirmed to
+# clear the cache-block floor. If it fails the same way, the real floor sits
+# above 0.2 and there is currently no room to start doc-lane next to Qwen at
+# all; the fix then is capping Qwen's own usage first (DECISIONS.md §7 assumed
+# a hard 20GB cap on Qwen that evidently isn't enforced in practice), not this
+# value. Before running this for real, find the actual minimum viable value and
+# re-check the total VRAM budget in DECISIONS.md §7 against it.
+gpu-memory-utilization: 0.2
