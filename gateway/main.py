@@ -157,17 +157,41 @@ DOC_LANE_MAX_TOKENS = 4096
 
 
 async def _doc_lane_model_name(client: httpx.AsyncClient) -> str:
-    """Best-effort, mirroring scripts/test_doclane.sh: ask the doc lane what it's
-    actually serving, falling back to DOC_LANE_MODEL on any failure.
+    """Confirm the doc lane is actually serving DOC_LANE_MODEL, rather than picking
+    whatever /v1/models happens to list first.
 
-    Not worth its own error path — a wrong model name surfaces on the real
-    completions call below as an upstream 4xx, which already has a mapping.
+    Was `resp.json()["data"][0]["id"]` — Ollama's /v1/models sorts by `created`
+    descending, so index 0 is whichever model was pulled/loaded most recently, not
+    necessarily the doc-lane model. On the shared GPU host this silently sent every
+    page to qwen3.5:9b (a general chat model also served from the same Ollama
+    instance) instead of PaddleOCR-VL-1.6-0.9B — confirmed 2026-08-04: same image,
+    same "OCR:" prompt, qwen3.5:9b's transcription drops every ☑/☐ tick-box glyph
+    that PaddleOCR-VL preserves verbatim. Wrong model, not missing OCR capability.
+
+    Exact id match wins; an Ollama tag change (":latest" -> a pinned version) still
+    matches on the name before ":". No match at all now fails loud instead of
+    silently sending pages to an unintended model.
     """
     try:
         resp = await client.get(f"{DOC_LANE_URL}/v1/models")
-        return resp.json()["data"][0]["id"]
-    except Exception:
+    except httpx.HTTPError as exc:
+        # Same transport-vs-application-error split as _doc_lane_complete below.
+        raise HTTPException(status_code=502, detail=f"doc lane unreachable: {exc}") from exc
+    served = [m.get("id", "") for m in resp.json().get("data", [])]
+
+    if DOC_LANE_MODEL in served:
         return DOC_LANE_MODEL
+
+    wanted_name = DOC_LANE_MODEL.split(":", 1)[0]
+    for model_id in served:
+        if model_id.split(":", 1)[0] == wanted_name:
+            return model_id
+
+    raise HTTPException(
+        status_code=502,
+        detail=f"doc lane is not serving DOC_LANE_MODEL={DOC_LANE_MODEL!r}. "
+        f"Models actually served: {served}",
+    )
 
 
 async def _doc_lane_complete(
