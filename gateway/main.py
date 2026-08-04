@@ -52,8 +52,9 @@ from ocr_engine import (  # noqa: E402
     warmup,
 )
 
-DOC_LANE_URL = os.getenv("DOC_LANE_URL", "http://localhost:8118")
+DOC_LANE_URL = os.getenv("DOC_LANE_URL", "http://localhost:11434")
 DOC_LANE_TIMEOUT = float(os.getenv("DOC_LANE_TIMEOUT", "300"))
+MODEL="AuditAid/PaddleOCR-VL-1.6-0.9B:latest"
 
 
 @asynccontextmanager
@@ -182,7 +183,7 @@ async def _doc_lane_complete(
         resp = await client.post(
             f"{DOC_LANE_URL}/v1/chat/completions",
             json={
-                "model": model,
+                "model": MODEL,
                 "messages": [
                     {
                         "role": "user",
