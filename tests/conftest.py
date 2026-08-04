@@ -5,7 +5,7 @@ is actually deployed (paddleocr kwargs, JSON serialisation, docker networking),
 and a mock would replace exactly the parts that are unverified.
 
     OCR_BASE_URL      default http://localhost:8000
-    OCR_DOC_LANE_URL  default http://localhost:8118  (probed directly, see doc_lane_up)
+    OCR_DOC_LANE_URL  default http://localhost:11434  (probed directly, see doc_lane_up)
     OCR_TEST_TIMEOUT  default 120  (seconds, per request)
     OCR_TEST_DOCKER   set to 1 to enable tests that shell out to docker compose
 """
@@ -20,7 +20,7 @@ import pytest
 from PIL import Image, ImageDraw, ImageFont
 
 BASE_URL = os.getenv("OCR_BASE_URL", "http://localhost:8000")
-DOC_LANE_PROBE_URL = os.getenv("OCR_DOC_LANE_URL", "http://localhost:8118")
+DOC_LANE_PROBE_URL = os.getenv("OCR_DOC_LANE_URL", "http://localhost:11434")
 TIMEOUT = float(os.getenv("OCR_TEST_TIMEOUT", "120"))
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -96,8 +96,9 @@ def doc_lane_up() -> bool:
     the doc lane was UP — meaning the DECISIONS.md #7 isolation claim, which those
     tests exist solely to prove, was never actually exercised.
 
-    Assumes the doc lane's port is published to this host (compose publishes 8118).
-    Set OCR_DOC_LANE_URL if it is not, or if the gateway is on another machine.
+    The doc lane is Ollama running on the GPU host, not a compose service — assumes
+    it is reachable at OCR_DOC_LANE_URL (default localhost:11434). Set it if pytest
+    runs on a different machine than the doc lane.
     """
     for path in ("/health", "/"):
         try:

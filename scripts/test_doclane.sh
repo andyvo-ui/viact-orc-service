@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# Test the doc lane (PaddleOCR-VL on vLLM) DIRECTLY on :8118.
+# Test the doc lane (PaddleOCR-VL on Ollama) DIRECTLY on :11434.
 #
 #   ./scripts/test_doclane.sh <image-or-pdf-page.jpg> [host:port]
-#   ./scripts/test_doclane.sh tests/samples/03_mixed_tc_en.png 172.16.1.22:8118
+#   ./scripts/test_doclane.sh tests/samples/03_mixed_tc_en.png 172.16.1.25:11434
 #
-# Why not through the gateway: `paddleocr genai_server --backend vllm` runs vLLM's
-# OpenAI-compatible server, so the doc lane speaks /v1/chat/completions. It has no
-# /parse endpoint, which means the gateway's /parse proxy 404s against it. Until
-# that is resolved, this is how you exercise the model.
+# Why not through the gateway: this hits the doc lane's own OpenAI-compatible
+# /v1/chat/completions directly, bypassing gateway/main.py's /parse proxy — useful
+# for isolating "the doc lane is wrong" from "the gateway's proxy is wrong". The
+# doc lane is an Ollama server on the GPU host, not part of this compose stack.
 
 set -uo pipefail
 IMG="${1:-}"
-ADDR="${2:-localhost:8118}"
+ADDR="${2:-localhost:11434}"
 [ -f "$IMG" ] || { echo "usage: $0 <image> [host:port]"; exit 2; }
 
 BASE="http://${ADDR}"
@@ -22,10 +22,11 @@ code=$(curl -s -o /tmp/_dl_health -w '%{http_code}' --max-time 10 "${BASE}/healt
 echo "  GET /health -> HTTP ${code}"
 if [ "$code" != "200" ]; then
   echo "  doc lane not answering. Checks:"
-  echo "    docker compose ps"
-  echo "    docker compose logs --tail=50 doc-lane"
-  echo "  If it is 'up' but unreachable, confirm --host 0.0.0.0 is in the compose"
-  echo "  command: genai_server defaults to localhost and binds inside the container."
+  echo "    ssh into the GPU host and: systemctl status ollama"
+  echo "    journalctl -u ollama -n 50"
+  echo "  If it is up but unreachable from here, confirm Ollama is bound to"
+  echo "  0.0.0.0 (OLLAMA_HOST=0.0.0.0), not just 127.0.0.1, and that :11434 is"
+  echo "  open through any firewall between this machine and the GPU host."
   exit 1
 fi
 
@@ -92,5 +93,6 @@ echo "== 5. VRAM after =="
 command -v nvidia-smi >/dev/null && \
   nvidia-smi --query-gpu=memory.used,memory.total --format=csv,noheader || true
 echo
-echo "Doc lane should sit around 5GB. If total used jumped by ~16GB, gpu-memory-utilization"
-echo "is not being applied - stop it NOW (docker compose stop doc-lane) before it starves Qwen."
+echo "Doc lane should sit around 5GB. If total used jumped much higher, Ollama is not"
+echo "respecting its VRAM budget - stop it NOW (ssh the GPU host, systemctl stop ollama)"
+echo "before it starves Qwen."

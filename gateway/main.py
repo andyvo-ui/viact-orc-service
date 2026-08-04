@@ -1,4 +1,4 @@
-"""OCR gateway: fast lane (PP-OCRv6 small, ONNX) and doc lane (PaddleOCR-VL, vLLM).
+"""OCR gateway: fast lane (PP-OCRv6 small, ONNX) and doc lane (PaddleOCR-VL, Ollama).
 
 Routing is the caller's choice, not a guess. The split is FLAT TEXT vs PRESERVED
 STRUCTURE — not image vs PDF:
@@ -14,8 +14,11 @@ born-digital contract with tables belongs on the doc lane — sending it to /ocr
 returns 200 and silently discards the structure you wanted. Page count is the cheap
 proxy for that line, which is why /ocr caps it rather than refusing PDFs outright.
 
-NOTE: not smoke-tested end to end. The /parse proxy assumes the doc-lane server
-takes multipart 'file' and returns JSON — verify against the running container.
+The doc lane is NOT part of this compose stack — it is an Ollama server already
+running on the GPU host, serving PaddleOCR-VL over its OpenAI-compatible API.
+Point DOC_LANE_URL at it (default: localhost:11434).
+
+NOTE: /parse is not smoke-tested end to end against that server yet.
 /ocr's response shape IS now verified against paddleocr 3.7.0 by source reading;
 see run_ocr in fast_lane/ocr_engine.py.
 """
@@ -54,7 +57,10 @@ from ocr_engine import (  # noqa: E402
 
 DOC_LANE_URL = os.getenv("DOC_LANE_URL", "http://localhost:11434")
 DOC_LANE_TIMEOUT = float(os.getenv("DOC_LANE_TIMEOUT", "300"))
-MODEL="AuditAid/PaddleOCR-VL-1.6-0.9B:latest"
+
+# Ollama's library naming (namespace/model:tag), not a vLLM --model path. Used as
+# the fallback when the live /v1/models lookup fails; the fetched name wins.
+DOC_LANE_MODEL = os.getenv("MODEL", "AuditAid/PaddleOCR-VL-1.6-0.9B:latest")
 
 
 @asynccontextmanager
@@ -147,13 +153,12 @@ async def ocr(
         tmp_path.unlink(missing_ok=True)
 
 
-DOC_LANE_MODEL_FALLBACK = "PaddleOCR-VL-1.6-0.9B"
 DOC_LANE_MAX_TOKENS = 4096
 
 
 async def _doc_lane_model_name(client: httpx.AsyncClient) -> str:
     """Best-effort, mirroring scripts/test_doclane.sh: ask the doc lane what it's
-    actually serving, falling back to the known default on any failure.
+    actually serving, falling back to DOC_LANE_MODEL on any failure.
 
     Not worth its own error path — a wrong model name surfaces on the real
     completions call below as an upstream 4xx, which already has a mapping.
@@ -162,7 +167,7 @@ async def _doc_lane_model_name(client: httpx.AsyncClient) -> str:
         resp = await client.get(f"{DOC_LANE_URL}/v1/models")
         return resp.json()["data"][0]["id"]
     except Exception:
-        return DOC_LANE_MODEL_FALLBACK
+        return DOC_LANE_MODEL
 
 
 async def _doc_lane_complete(
@@ -183,7 +188,7 @@ async def _doc_lane_complete(
         resp = await client.post(
             f"{DOC_LANE_URL}/v1/chat/completions",
             json={
-                "model": MODEL,
+                "model": model,
                 "messages": [
                     {
                         "role": "user",
@@ -253,7 +258,7 @@ async def _doc_lane_complete(
     ),
 )
 async def parse(file: UploadFile = File(...)):
-    """Doc lane: structured document parsing via PaddleOCR-VL, served by vLLM.
+    """Doc lane: structured document parsing via PaddleOCR-VL, served by Ollama.
 
     The doc lane is a vision-language model behind an OpenAI-compatible chat API —
     it has no /parse route and does not accept multipart file uploads or raw PDF

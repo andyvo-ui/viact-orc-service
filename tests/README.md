@@ -1,8 +1,8 @@
 # tests — gateway
 
 Black-box, over HTTP, against a **running** gateway. Nothing is mocked: the parts
-that are unverified (paddleocr kwargs, numpy→JSON, docker DNS to the doc lane) are
-exactly the parts a mock would replace.
+that are unverified (paddleocr kwargs, numpy→JSON, reaching the doc lane over the
+network) are exactly the parts a mock would replace.
 
 Run these **on the VM**, not on a laptop — they need the container up.
 
@@ -42,7 +42,7 @@ Config:
 | env | default | what it does |
 |---|---|---|
 | `OCR_BASE_URL` | `http://localhost:8000` | where the gateway is |
-| `OCR_DOC_LANE_URL` | `http://localhost:8118` | probed directly to decide if the doc lane is up |
+| `OCR_DOC_LANE_URL` | `http://localhost:11434` | probed directly to decide if the doc lane is up |
 | `OCR_TEST_TIMEOUT` | `120` | per-request timeout |
 | `OCR_TEST_DOCKER` | unset | enables tests that `docker compose exec` into the container |
 | `OCR_TEST_CONCURRENCY` | `8` | parallel requests in C1 |
@@ -94,11 +94,14 @@ live. A green fast pass is not evidence about concurrency — run the full suite
 
 ## Groups D and G that need a manual step
 
+The doc lane is Ollama on the GPU host, not a compose service — you cannot
+`docker compose stop` it from here. Stop it at the source (or block :11434) instead.
+
 ```bash
 # D1/D2 — the whole point of having no depends_on
-docker compose stop doc-lane
+ssh <gpu-host> systemctl stop ollama     # or: firewall off port 11434 to this host
 pytest tests/test_failure.py -v -m doclane_down
-docker compose start doc-lane
+ssh <gpu-host> systemctl start ollama
 
 # D4 — timeout behaviour
 DOC_LANE_TIMEOUT=5 docker compose up -d gateway
@@ -121,28 +124,26 @@ pytest tests/test_idempotency.py::test_g4_golden_snapshot
 
 ## Not automated here — deliberately
 
-**Group E (resources).** Needs `nvidia-smi` on the host and the LLM running
+**Group E (resources).** Needs `nvidia-smi` on the GPU host and the LLM running
 alongside. Asserting VRAM numbers from inside pytest would encode a machine state
 that changes daily.
 
 ```bash
-docker compose up -d doc-lane && sleep 120
-nvidia-smi                       # doc lane should be ~5GB, NOT ~28GB
-                                 # ~28GB => GPU_MEMORY_UTILIZATION is not forwarded (SETUP.md #3)
-docker stats --no-stream
+ssh <gpu-host> nvidia-smi        # doc lane (Ollama) should be ~5GB, NOT ~28GB
+docker stats --no-stream         # this host: gateway only, doc lane is remote
 docker image ls ocr-service-gateway
 ```
 
 **Group F (exposure).** A decision, not a bug. Port 8000 binds `0.0.0.0` with no
-auth, and 8118 is published too.
+auth. The doc lane's exposure (Ollama on :11434 on the GPU host) is outside this
+repo's control — check it there.
 
 ```bash
 curl http://<VM-IP>:8000/health          # from another machine — succeeds today
 ```
 
 Fix, if you decide it needs one: bind `127.0.0.1:8000:8000` and put a reverse
-proxy in front, or drop `doc-lane`'s `ports:` entirely since only the gateway
-calls it.
+proxy in front.
 
 **Group H (accuracy).** This is the one that decides whether the service is usable,
 and it is the one I cannot write. It needs 30–50 real HK documents with ground
@@ -168,11 +169,12 @@ predictions above — so my testing blind spots correlate with my reading blind 
 Known gaps:
 
 - **No ground truth.** Every accuracy-shaped test is either `xfail` or a print.
-- **`doc_lane_up` assumes port 8118 is reachable from wherever pytest runs.** It is
-  probed directly rather than through the gateway, because the gateway's error
-  space cannot distinguish "doc lane down" from "doc lane rejected this file" —
-  the old in-band probe made every `doclane_down` test pass while the doc lane was
-  UP. If pytest and the gateway are on different hosts, set `OCR_DOC_LANE_URL`.
+- **`doc_lane_up` assumes port 11434 (Ollama) is reachable from wherever pytest
+  runs.** It is probed directly rather than through the gateway, because the
+  gateway's error space cannot distinguish "doc lane down" from "doc lane rejected
+  this file" — the old in-band probe made every `doclane_down` test pass while the
+  doc lane was UP. If pytest and the doc lane are on different hosts, set
+  `OCR_DOC_LANE_URL`.
 - **No real input profile.** B10/B11 (rotation) assert nothing hard because I do not
   know whether your input is flat scans or site photos. That single fact flips
   SETUP.md #5 and changes which failures matter.
@@ -182,5 +184,5 @@ Known gaps:
 - **No PDF-with-text-layer case.** A digitally generated PDF and a scanned PDF are
   different inputs; I do not know which you get.
 - **No multi-language-in-one-line case** automated — needs real fixtures.
-- **Nothing tests the doc lane directly** on `:8118`. This suite is gateway-only,
-  as asked.
+- **Nothing tests the doc lane directly** on `:11434`. This suite is gateway-only,
+  as asked (`scripts/test_doclane.sh` covers the direct path).

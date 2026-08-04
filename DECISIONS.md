@@ -37,10 +37,17 @@ không bắt buộc để inference.
                   │     PP-OCRv6_small det+rec (ONNX) · CPU · ~31MB
                   │     POST /ocr → text + boxes + scores
                   │
-                  └── DOC LANE   — HTTP tới http://doc-lane:8118
-                        PaddleOCR-VL-1.6-0.9B trên vLLM · GPU · ~2GB model
+                  └── DOC LANE   — HTTP ra ngoài compose, tới Ollama trên GPU host
+                        (gateway/.env: DOC_LANE_URL, mặc định :11434)
+                        PaddleOCR-VL-1.6-0.9B trên Ollama · GPU · không do repo này quản
                         POST /parse → Markdown/JSON giữ cấu trúc
 ```
+
+**Đổi hướng (sau bản đầu):** doc lane từng chạy như container `paddleocr genai_server`
+(vLLM) trong `docker-compose.yml`, cổng 8118. Đã bỏ — GPU host đã cài sẵn Ollama và
+serve model đó trực tiếp, nên container vLLM trong repo này là dư thừa. `MODEL` và
+`DOC_LANE_URL` giờ đọc từ `gateway/.env` (namespace/tag kiểu Ollama, không phải
+đường dẫn model của vLLM).
 
 ## 4. Bảng quyết định
 
@@ -48,11 +55,11 @@ không bắt buộc để inference.
 |---|---|---|---|---|
 | 1 | Model OCR | **PP-OCRv6_small** | gap so với medium trên đúng 2 ngôn ngữ cần: TC 77.0 vs 78.6, EN 93.3 vs 94.1 — nhỏ | benchmark HK thật không đạt → đổi 2 dòng `DET_MODEL`/`REC_MODEL` sang medium |
 | 2 | Fast lane chạy ở đâu | **CPU** | GPU dùng chung với LLM → time-slicing làm p95 latency không đoán được. CPU cho latency ổn định, độc lập tải LLM. Đồng thời né sạch rủi ro sm_120 | đo p95 dưới tải thật thấy thiếu throughput |
-| 3 | Doc lane | **PaddleOCR-VL-1.6** | chạy trên vLLM (có sm_120 sẵn) + đạt 96.3% OmniDocBench, cao hơn StructureV3 | — |
+| 3 | Doc lane | **PaddleOCR-VL-1.6** | đạt 96.3% OmniDocBench, cao hơn StructureV3. Ban đầu chọn vì chạy được trên vLLM (sm_120 sẵn); nay serve qua Ollama trên GPU host, ngoài repo này | — |
 | 4 | Backend inference | **onnxruntime** | official ONNX weights có sẵn trên HF; không cần cài paddlepaddle | — |
 | 5 | Gateway + fast lane | **chung 1 container** | gateway `import` trực tiếp `ocr_engine.py`, chạy in-process | muốn scale riêng fast lane → phải viết lại thành HTTP service |
 | 6 | Weights fast lane | **bake vào image lúc build** | container chạy offline, request đầu không chờ tải, build fail = biết sớm | — |
-| 7 | `depends_on` doc-lane | **KHÔNG** | `/ocr` phải sống kể cả khi GPU lane chết; tránh `up gateway` kéo theo image doc-lane (5.8GB tải, ~12–15GB trên đĩa — ước lượng, xác nhận bằng `docker images`) | — |
+| 7 | `depends_on` doc-lane | **KHÔNG** (nay không còn áp dụng — doc lane không phải service trong compose này nữa) | `/ocr` phải sống kể cả khi GPU lane chết. Trước đây còn tránh `up gateway` kéo theo image vLLM doc-lane (5.8GB); từ khi doc lane chuyển sang Ollama ngoài repo, service đó không còn tồn tại trong `docker-compose.yml` để mà depends_on | — |
 
 ## 5. Đã loại và lý do
 
@@ -127,7 +134,7 @@ chấp nhận serialise + scale bằng nhiều replica), không phải bug. `tes
 |---|---|---|
 | `rec_polys` là `list[np.ndarray]`, trả thẳng cho FastAPI | **`/ocr` trả 500 với mọi ảnh có chữ.** Ảnh trắng trả 200 (list rỗng) nên `/health` và test ảnh trắng vẫn xanh → bug ẩn rất kỹ | `run_ocr` coerce về builtin trong `ocr_engine.py` |
 | `raise_for_status()` nằm trong `except httpx.HTTPError`; `HTTPStatusError` là subclass của `HTTPError` | doc lane trả 400 ("file của bạn sai") → caller nhận 502 ("GPU box chết") → retry vô hạn một request không bao giờ thành công | `/parse` tách 3 nhánh: transport → 502, upstream 4xx → pass through, upstream 5xx → 502 |
-| Fixture `doc_lane_up` suy ra trạng thái doc lane từ status code của gateway | Do bug trên, doc lane **sống** mà từ chối file rác cũng ra 502 → fixture báo "chết". Toàn bộ nhóm `doclane_down` **pass mà không hề có điều kiện của nó** → claim §7 chưa từng được kiểm | probe trực tiếp cổng 8118, không qua gateway |
+| Fixture `doc_lane_up` suy ra trạng thái doc lane từ status code của gateway | Do bug trên, doc lane **sống** mà từ chối file rác cũng ra 502 → fixture báo "chết". Toàn bộ nhóm `doclane_down` **pass mà không hề có điều kiện của nó** → claim §7 chưa từng được kiểm | probe trực tiếp cổng doc lane (khi đó 8118/vLLM, nay 11434/Ollama), không qua gateway |
 | `check_device.py` trỏ vào `fast_lane/models/...` | Đường dẫn không bao giờ tồn tại (paddlex cache ở `~/.paddlex/official_models/`) → script luôn FAIL sai lý do, mà đây là công cụ duy nhất trả lời câu hỏi sm_120 | glob trong cache thật của paddlex |
 | `predict()` yield `{"error": ...}` rồi **chạy tiếp** (không `return`) | `.get("rec_texts", [])` biến record lỗi đó thành **một page rỗng** → số page nhiều hơn thật đúng 1, trông y như tài liệu có trang trắng | `run_ocr` raise `EngineRejectedInput` |
 | `/ocr` không có giới hạn size lẫn số page | `await file.read()` nạp cả file vào RAM; PDF 200 page block event loop ~2 phút → `/health` chết → compose restart container đang chạy tốt | stream ra đĩa + cap `OCR_MAX_UPLOAD_BYTES` / `OCR_MAX_PAGES`, trả 413 |

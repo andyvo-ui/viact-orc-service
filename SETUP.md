@@ -6,15 +6,29 @@
   (2026-06-11); 3.5/3.6 predate it and cannot resolve `PP-OCRv6_*` model names.
 - **PP-OCRv6**, **PaddleOCR-VL-1.6** — *model* versions, downloaded by the library.
 
-Two containers:
+**One container in this stack, plus one external server:**
 
-| Service | Port | Endpoint | Model | Runs on | Size |
+| Service | Port | Endpoint | Model | Runs on | In this compose? |
 |---|---|---|---|---|---|
-| `gateway` | 8000 | `POST /ocr` | PP-OCRv6_small det+rec (ONNX), ×2 orientation pipelines | CPU | ~31 MB + ~7 MB orientation, baked in |
-| `doc-lane` | 8118 | `POST /parse` | PaddleOCR-VL-1.6-0.9B | GPU (vLLM) | 5.8 GB pull, ~12–15 GB on disk |
+| `gateway` | 8000 | `POST /ocr` | PP-OCRv6_small det+rec (ONNX), ×2 orientation pipelines | CPU | **yes** |
+| doc lane | 11434 | `POST /parse` | PaddleOCR-VL-1.6-0.9B | GPU (**Ollama**) | **no — already running on the GPU host** |
 
 The fast lane is **not** a separate container — it is a Python library imported
-in-process by the gateway. Only the doc lane is a standalone server.
+in-process by the gateway.
+
+The doc lane is **not managed by this repo at all**. PaddleOCR-VL is served by an
+Ollama instance already installed on the GPU host; the gateway only speaks HTTP to
+its OpenAI-compatible API. Earlier revisions ran a `paddleocr genai_server` (vLLM)
+container on `:8118` — that service has been removed from `docker-compose.yml`.
+Configure the connection in `gateway/.env`:
+
+```
+DOC_LANE_URL=http://172.16.1.25:11434
+MODEL=AuditAid/PaddleOCR-VL-1.6-0.9B:latest
+```
+
+`DOC_LANE_URL` must be reachable **from inside the gateway container** — that is why
+it is a LAN IP and not `localhost`.
 
 ---
 
@@ -22,22 +36,19 @@ in-process by the gateway. Only the doc lane is a standalone server.
 
 ```bash
 docker --version && docker compose version
-nvidia-smi                              # doc lane only
-docker run --rm --gpus all nvidia/cuda:13.0.0-base-ubuntu24.04 nvidia-smi
 ```
 
-That last command verifies the NVIDIA Container Toolkit is wired up. If it fails,
-the doc lane cannot see the GPU no matter what compose says.
+`nvidia-smi` / GPU toolkit checks are the GPU host's concern (it runs Ollama, not
+this repo) — relevant here only if you also enable the experimental "Fast lane on
+GPU" path below.
 
 **What the host CUDA version does and does not affect.** The number in
 `nvidia-smi`'s header is the highest CUDA version the *driver* supports, and that
 is the only thing containers care about — each image ships its own CUDA runtime.
-So on a CUDA 13.2 host:
 
 | component | affected by host CUDA? |
 |---|---|
 | `gateway` (fast lane) | **No.** `python:3.11-slim`, `onnxruntime` CPU build. No CUDA at all. |
-| `doc-lane` (vLLM) | Only via the driver. The image carries its own runtime; a newer driver runs it fine. |
 | `check_device.py` / GPU fast lane | **Yes** — see below. |
 
 The one real trap: official `onnxruntime-gpu` wheels are built against **CUDA 12**,
@@ -57,10 +68,11 @@ docker compose ps
 `--build` builds the gateway image. That build downloads the PP-OCRv6 weights and
 bakes them in, so it needs network access — but only once, at build time.
 
-Watch the doc lane come up (vLLM takes a while to load the model):
+This only starts `gateway`. Confirm the doc lane (Ollama, on the GPU host) is
+already up separately — `docker compose` here has no knowledge of it:
 
 ```bash
-docker compose logs -f doc-lane
+curl http://<gpu-host>:11434/v1/models
 ```
 
 ## 2. Verify
@@ -70,8 +82,7 @@ curl http://localhost:8000/health          # device + the fast-lane limits + def
 curl -F "file=@sample.jpg" http://localhost:8000/ocr                      # fast lane
 curl -F "file=@photo.jpg" "http://localhost:8000/ocr?orientation=auto"    # site photo, angled text
 curl -F "file=@scan.pdf"  "http://localhost:8000/ocr?orientation=upright" # flat scan, faster
-curl -F "file=@sample.pdf" http://localhost:8000/parse                    # doc lane
-curl http://localhost:8118/health                                         # doc lane direct
+curl -F "file=@sample.pdf" http://localhost:8000/parse                    # doc lane, via the gateway proxy
 ```
 
 Then look at real output with your own documents:
@@ -102,21 +113,17 @@ The page cap is set by the blocking issue, not by the model: `run_ocr` occupies 
 event loop, so a long PDF stops `/health` answering and compose eventually restarts a
 working container. Raise it after benchmarking with `test_c1` / `test_c2`.
 
-Check the doc lane is not eating the whole GPU:
+Check the doc lane is not eating the whole GPU (on the GPU host):
 
 ```bash
 nvidia-smi
 ```
 
-## Fast lane only (skip the GPU container)
+## Fast lane only (skip the doc lane entirely)
 
-The gateway has no `depends_on` for the doc lane, so it runs alone:
-
-```bash
-docker compose up -d --build gateway
-```
-
-`/ocr` works; `/parse` returns 502. Saves ~15 GB of disk and all the VRAM.
+Nothing here depends on the doc lane — `docker compose up -d --build` already only
+starts `gateway`. If Ollama on the GPU host is down or unreachable, `/ocr` still
+works; `/parse` just returns 502.
 
 ## Other services calling this
 
@@ -175,17 +182,15 @@ sharing the GPU with the LLM makes fast-lane p95 latency unpredictable.
 # on a connected machine
 docker compose build gateway
 docker save ocr-service-gateway:latest | gzip > ocr-gateway.tar.gz
-docker pull ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu
-docker save ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu \
-  | gzip > ocr-doc-lane.tar.gz
 
 # on the server
 gunzip -c ocr-gateway.tar.gz | docker load
-gunzip -c ocr-doc-lane.tar.gz | docker load
-docker compose up -d              # no --build, images already present
+docker compose up -d              # no --build, image already present
 ```
 
-The gateway image carries its weights, so it needs no network at run time.
+The gateway image carries its weights, so it needs no network at run time. The doc
+lane (Ollama + the model) is provisioned separately on the GPU host — outside this
+repo's air-gap procedure.
 
 ## Running without Docker
 
@@ -194,7 +199,7 @@ python3 -m venv .venv && source .venv/bin/activate
 pip install -U pip
 pip install -r fast_lane/requirements.txt -r gateway/requirements.txt
 python fast_lane/prefetch_models.py
-DOC_LANE_URL=http://localhost:8118 uvicorn main:app --app-dir gateway --host 0.0.0.0 --port 8000
+DOC_LANE_URL=http://<gpu-host>:11434 uvicorn main:app --app-dir gateway --host 0.0.0.0 --port 8000
 ```
 
 One venv for both — the gateway imports `fast_lane/ocr_engine.py` directly.
@@ -233,14 +238,10 @@ need a running container:
    miss the 5s compose healthcheck under load. `tests/test_concurrency.py::test_c1`
    and `::test_c2` measure it. Deliberately not "fixed" — the remedy is a design
    choice (`run_in_threadpool`, a plain `def` endpoint, or accepting serialisation).
-3. **`GPU_MEMORY_UTILIZATION` in docker-compose.yml.** vLLM defaults to 90% of
-   *total* VRAM, which would starve the LLM on the same GPU. Verify that
-   `paddleocr genai_server` actually forwards this env var — if not, pass it as a
-   CLI flag in the compose `command:`. Check with `nvidia-smi` after startup.
-4. **Accuracy on real HK documents.** Benchmark 30–50 real Traditional Chinese +
+3. **Accuracy on real HK documents.** Benchmark 30–50 real Traditional Chinese +
    English documents through the fast lane. Published numbers for the small tier
    are TC 77.0% / printed EN 93.3%; if that is not enough, switch `DET_MODEL` /
    `REC_MODEL` in `ocr_engine.py` to the `medium` tier (TC 78.6% / EN 94.1%) —
    that is the only change needed.
-5. **Text orientation.** `use_textline_orientation` is off. Fine for scanned
+4. **Text orientation.** `use_textline_orientation` is off. Fine for scanned
    documents shot straight on; wrong for site photos where signage is at an angle.

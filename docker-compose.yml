@@ -1,16 +1,21 @@
 services:
   # Gateway + fast lane (PP-OCRv6_small, ONNX, CPU).
-  # No depends_on for doc-lane on purpose: /ocr must stay available even when the
-  # GPU lane is down or not started at all. /parse just returns 502 in that case.
+  #
+  # The doc lane is NOT a service here: PaddleOCR-VL is served by an Ollama server
+  # already running on the GPU host, outside this stack. gateway/.env supplies
+  # DOC_LANE_URL and MODEL; that host must be reachable from inside the container,
+  # which is why .env uses the LAN IP rather than localhost. /ocr stays up
+  # regardless — /parse just returns 502 when the doc lane is unreachable.
   gateway:
     build: .
     image: ocr-service-gateway:latest
     container_name: ocr-gateway
     ports:
       - "8000:8000"
+    env_file:
+      - gateway/.env
     environment:
       - OCR_DEVICE=cpu
-      - DOC_LANE_URL=http://doc-lane:8118
       - DOC_LANE_TIMEOUT=300
     healthcheck:
       test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
@@ -19,44 +24,3 @@ services:
       start_period: 60s
       retries: 3
     restart: unless-stopped
-
-  # Doc lane (PaddleOCR-VL-1.6-0.9B on vLLM, GPU).
-  doc-lane:
-    image: ccr-2vdh3abv-pub.cnc.bj.baidubce.com/paddlepaddle/paddleocr-genai-vllm-server:latest-nvidia-gpu
-    container_name: ocr-doc-lane
-    # --host 0.0.0.0 is REQUIRED, not optional: paddlex's genai_server defaults
-    # --host to "localhost" (inference/genai/server.py), so without this vLLM binds
-    # 127.0.0.1 INSIDE the container and publishing 8118 reaches nothing.
-    #
-    # --backend_config is how gpu-memory-utilization actually gets set. The
-    # GPU_MEMORY_UTILIZATION env var was never read by anything: run_genai_server
-    # builds vLLM's args from get_config() defaults merged with this YAML file only.
-    command: >
-      paddleocr genai_server
-      --model_name PaddleOCR-VL-1.6-0.9B
-      --backend vllm
-      --host 0.0.0.0
-      --port 8118
-      --backend_config /etc/doc-lane/vllm.yaml
-    ports:
-      - "8118:8118"
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-    volumes:
-      - ./doc_lane/vllm.yaml:/etc/doc-lane/vllm.yaml:ro
-      # Was /root/.cache — wrong user. genai_server runs as `paddleocr`, not root
-      # (confirmed from its own startup log: models are saved under
-      # /home/paddleocr/.paddlex/official_models/...), so /root/.cache was never
-      # the path anything actually wrote to. The cache silently lived in the
-      # container's writable layer instead of this volume, so every container
-      # recreation (e.g. `up --build`) re-triggered the multi-GB download.
-      - doc-lane-cache:/home/paddleocr/.paddlex
-    restart: unless-stopped
-
-volumes:
-  doc-lane-cache:
